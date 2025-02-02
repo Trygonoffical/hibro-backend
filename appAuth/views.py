@@ -5,7 +5,7 @@ from rest_framework import status
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from django.conf import settings
-from home.models import PhoneOTP, User , HomeSlider , Category , Product , ProductImage  , Testimonial , Advertisement , CompanyInfo , About , Menu , CustomPage
+from home.models import PhoneOTP, User , HomeSlider , Category , Product , ProductImage  , Testimonial , Advertisement , CompanyInfo , About , Menu , CustomPage , Clients
 from django.shortcuts import get_object_or_404
 import random
 from django.views.decorators.csrf import csrf_exempt
@@ -14,7 +14,7 @@ from rest_framework.permissions import AllowAny , IsAdminUser
 from django.utils import timezone
 from datetime import timedelta
 from .serializers import UserSerializer 
-from home.serializers import CategorySerializer , ProductSerializer , TestimonialSerializer , AdvertisementSerializer ,  CompanyInfoSerializer , AboutSerializer  , MenuSerializer , CustomPageSerializer
+from home.serializers import CategorySerializer , ProductSerializer , TestimonialSerializer , AdvertisementSerializer ,  CompanyInfoSerializer , AboutSerializer  , MenuSerializer , CustomPageSerializer , ClientsSerializer
 from rest_framework_simplejwt.tokens import RefreshToken
 from django.contrib.auth import authenticate
 from rest_framework.permissions import IsAuthenticated
@@ -596,6 +596,40 @@ class AdvertisementViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         queryset = Advertisement.objects.all()
+        if self.action == 'list':
+            position = self.request.query_params.get('position')
+            is_active = self.request.query_params.get('is_active')
+            
+            if position:
+                queryset = queryset.filter(position=position)
+            if is_active is not None:
+                queryset = queryset.filter(is_active=is_active.lower() == 'true')
+                
+        return queryset.order_by('-created_at')
+
+    @action(detail=True, methods=['POST'])
+    def toggle_status(self, request, pk=None):
+        advertisement = self.get_object()
+        advertisement.is_active = not advertisement.is_active
+        advertisement.save()
+        return Response({
+            'status': 'success',
+            'is_active': advertisement.is_active
+        })
+    
+class ClientsViewSet(viewsets.ModelViewSet):
+    queryset = Clients.objects.all()
+    serializer_class = ClientsSerializer
+    authentication_classes = [JWTAuthentication]
+    permission_classes = [IsAuthenticated]
+
+    def get_permissions(self):
+        if self.request.method == 'GET':
+            return [AllowAny()]
+        return [IsAdminUser()]
+
+    def get_queryset(self):
+        queryset = Clients.objects.all()
         if self.action == 'list':
             position = self.request.query_params.get('position')
             is_active = self.request.query_params.get('is_active')

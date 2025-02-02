@@ -3,7 +3,7 @@ from django.conf import settings
 from django.conf.urls.static import static
 from django.urls import path , include
 from rest_framework.routers import DefaultRouter
-from appAuth.views import GenerateOTP , VerifyOTP , UserLogin , RefreshToken , ValidateTokenView , CustomTokenRefreshView , HomeSliderViewSet , CategoryViewSet , ProductViewSet   , TestimonialViewSet , AdvertisementViewSet  , CompanyInfoViewSet , AboutViewSet  , MenuViewSet , CustomPageViewSet
+from appAuth.views import GenerateOTP , VerifyOTP , UserLogin , RefreshToken , ValidateTokenView , CustomTokenRefreshView , HomeSliderViewSet , CategoryViewSet , ProductViewSet   , TestimonialViewSet , AdvertisementViewSet  , CompanyInfoViewSet , AboutViewSet  , MenuViewSet , CustomPageViewSet , ClientsViewSet
 
 
 router = DefaultRouter()
@@ -16,6 +16,7 @@ router.register(r'company-info', CompanyInfoViewSet , basename='company-info')
 router.register(r'about', AboutViewSet, basename='about')
 router.register(r'menu', MenuViewSet, basename='menu')
 router.register(r'custom-pages', CustomPageViewSet , basename='custom-pages')
+router.register(r'clients', ClientsViewSet , basename='clients')
 
 
 urlpatterns = [

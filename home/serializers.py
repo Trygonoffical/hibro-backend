@@ -27,7 +27,7 @@ class TestimonialSerializer(serializers.ModelSerializer):
                 return request.build_absolute_uri(obj.image.url)
         return None
     
-class ClientSerializer(serializers.ModelSerializer):
+class ClientsSerializer(serializers.ModelSerializer):
     image_url = serializers.SerializerMethodField()
 
     class Meta:
