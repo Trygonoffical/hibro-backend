@@ -31,9 +31,9 @@ ALLOWED_HOSTS = [
     '195.35.20.31' ,
     'hirbro.trygon.tech' , 
     '127.0.0.1' , 
-    '127.0.0.1:3001' , 
+    '127.0.0.1:3003' , 
     'http://localhost' , 
-    'http://localhost:3001'
+    'http://localhost:3003'
 ]
 
 
