@@ -8,18 +8,18 @@ git pull origin main
 echo "New changes copied to server !"
 
 # Activate Virtual Env
-source /home/ardas/herbalbackend/env/bin/activate
+source /home/ardas/hibro/backend/actions-runner/_work/hibro-backend/env/bin/activate
 echo "Virtual env 'env' Activated !"
 
 echo "Installing Dependencies..."
-pip install -r /home/ardas/herbalbackend/mlm-backendv1/requirements.txt --no-input
+pip install -r /home/ardas/hibro/backend/actions-runner/_work/hibro-backend/hibro-backend/requirements.txt --no-input
 
 echo "Serving Static Files..."
-python3 /home/ardas/herbalbackend/mlm-backendv1/manage.py collectstatic --noinput
+python3 /home/ardas/hibro/backend/actions-runner/_work/hibro-backend/hibro-backend/manage.py collectstatic --noinput
 
 echo "Running Database migration"
-python3 /home/ardas/herbalbackend/mlm-backendv1/manage.py makemigrations
-python3 /home/ardas/herbalbackend/mlm-backendv1/manage.py migrate
+python3 /home/ardas/hibro/backend/actions-runner/_work/hibro-backend/hibro-backend/manage.py makemigrations
+python3 /home/ardas/hibro/backend/actions-runner/_work/hibro-backend/hibro-backend/manage.py migrate
 
 # Deactivate Virtual Env
 deactivate
