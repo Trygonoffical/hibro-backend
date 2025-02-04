@@ -28,14 +28,13 @@ SECRET_KEY = 'django-insecure-f@t*&f@f+0hiz!ej=t8^g$ty=vx_+^0o21!#e%0b#w-9%4230t
 DEBUG = True
 
 ALLOWED_HOSTS = [
-    '195.35.20.31' ,
-    'hirbro.trygon.tech' , 
+    '195.35.20.31',
+    'hibro.trygon.tech',
     'hibroapi.trygon.tech',
-    '127.0.0.1' , 
-    '127.0.0.1:3003' , 
-    'http://localhost' , 
-    'http://localhost:3003',
-    'hibroapi.trygon.tech'
+    '127.0.0.1',
+    'localhost',
+    'localhost:3003',
+    '.trygon.tech'  # Allows all subdomains of trygon.tech
 ]
 
 
