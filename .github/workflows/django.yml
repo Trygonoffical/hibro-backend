@@ -23,5 +23,5 @@ jobs:
         python-version: ${{ matrix.python-version }}
     - name: Running Scritp 
       run: |
-        cd /home/ardas/herbalbackend/mlm-backendv1 && ./.scripts/deploy.sh
+        cd /home/ardas/hibro/backend/actions-runner/_work/hibro-backend/hibro-backend && ./.scripts/deploy.sh
         
