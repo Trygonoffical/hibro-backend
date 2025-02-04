@@ -34,7 +34,8 @@ ALLOWED_HOSTS = [
     '127.0.0.1' , 
     '127.0.0.1:3003' , 
     'http://localhost' , 
-    'http://localhost:3003'
+    'http://localhost:3003',
+    'hibroapi.trygon.tech'
 ]
 
 
