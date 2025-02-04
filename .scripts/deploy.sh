@@ -29,4 +29,7 @@ echo "Virtual env 'env' Deactivated !"
 echo "Reloading Gunicorn service..."
 sudo systemctl restart gunicorn
 
+# Reload Gunicorn service to reflect new changes
+
+
 echo "Deployment Finished!"
