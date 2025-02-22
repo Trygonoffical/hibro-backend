@@ -30,6 +30,7 @@ DEBUG = True
 ALLOWED_HOSTS = [
     '195.35.20.31',
     'hibroapi.trygon.tech',
+    'hibroproduct.com',
     '127.0.0.1',
     'localhost',
     'localhost:3003',

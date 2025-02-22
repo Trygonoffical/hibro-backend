@@ -677,7 +677,8 @@ class Testimonial(models.Model):
 class Advertisement(models.Model):
     TYPE_CHOICES = (
         ('MULTI', 'mulitple ads'),
-        ('SINGLE', 'Full lenthg ad')
+        ('SINGLE', 'Full lenthg ad'),
+        ('PRODUCT', 'PRO page ad')
     )
     title = models.CharField(max_length=200, blank=True, null=True)
     image = models.ImageField(upload_to='advertisements/')
