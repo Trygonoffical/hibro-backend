@@ -1,7 +1,7 @@
 
 from rest_framework import serializers
 from django.contrib.auth import get_user_model
-from .models import Testimonial , HomeSlider , Category , ProductImage , ProductFeature , Product  , Advertisement ,  CompanyInfo , About , Menu , CustomPage , Clients
+from .models import Testimonial , HomeSlider , Category , ProductImage , ProductFeature , Product  , Advertisement ,  CompanyInfo , About , Menu , CustomPage , Clients , BulkOrderRequest, BulkOrderPrice
 from appAuth.serializers import UserSerializer
 from django.db import IntegrityError
 from django.db.models import Sum, Avg, Count, Min, Max
@@ -90,16 +90,31 @@ class ProductSerializer(serializers.ModelSerializer):
     )
     category_details = CategoryDetailSerializer(source='categories', many=True, read_only=True)
 
+    # Add this field to include the brochure URL in the response
+    brochure_url = serializers.SerializerMethodField()
+
+    # Other fields...
+    product_brochure = serializers.FileField(required=False, allow_null=True)
+    
     class Meta:
         model = Product
         fields = ['id', 'name', 'slug', 'description', 'regular_price', 
                  'selling_price', 'gst_percentage', 'stock',
                  'is_featured', 'is_bestseller', 'is_new_arrival', 
                  'is_trending', 'is_active', 'images', 'features',
-                 'uploaded_images', 'feature_list', 'categories', 'category_details']
+                 'uploaded_images', 'feature_list', 'categories', 'category_details' , 'brochure_url' , 'product_brochure']
         # read_only_fields = ['slug']  # Make sure slug is read-only
         
-
+    def get_brochure_url(self, obj):
+        """Get the URL for the product brochure"""
+        if obj.product_brochure and hasattr(obj.product_brochure, 'url'):
+            request = self.context.get('request')
+            if request:
+                return request.build_absolute_uri(obj.product_brochure.url)
+            # If no request in context, return relative URL
+            return obj.product_brochure.url if obj.product_brochure else None
+        return None
+    
     def validate(self, data):
         # Add proper validation messages
         if not data.get('name'):
@@ -434,3 +449,34 @@ class CustomPageSerializer(serializers.ModelSerializer):
         fields = ['id', 'title', 'slug', 'content', 'is_active', 
                  'show_in_footer', 'show_in_header', 'order', 
                  'created_at', 'updated_at']
+        
+
+class BulkOrderRequestSerializer(serializers.ModelSerializer):
+    product_name = serializers.CharField(source='product.name', read_only=True)
+    status_display = serializers.CharField(source='get_status_display', read_only=True)
+    
+    class Meta:
+        model = BulkOrderRequest
+        fields = [
+            'id', 'name', 'email', 'phone', 'company_name', 
+            'product', 'product_name', 'quantity_required', 
+            'additional_notes', 'price_per_unit', 'total_price', 
+            'status', 'status_display', 'is_processed', 'created_at'
+        ]
+        read_only_fields = ['price_per_unit', 'total_price', 'status', 'is_processed', 'created_at']
+
+
+class BulkOrderRequestSerializer(serializers.ModelSerializer):
+    product_name = serializers.CharField(source='product.name', read_only=True)
+    product_slug = serializers.CharField(source='product.slug', read_only=True)
+    status_display = serializers.CharField(source='get_status_display', read_only=True)
+    
+    class Meta:
+        model = BulkOrderRequest
+        fields = [
+            'id', 'name', 'email', 'phone', 'company_name', 
+            'product', 'product_name', 'product_slug', 'quantity_required', 
+            'additional_notes', 'price_per_unit', 'total_price', 
+            'status', 'status_display', 'is_processed', 'created_at'
+        ]
+        read_only_fields = ['price_per_unit', 'total_price', 'status', 'is_processed', 'created_at']

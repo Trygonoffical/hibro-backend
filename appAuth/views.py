@@ -5,7 +5,8 @@ from rest_framework import status
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from django.conf import settings
-from home.models import PhoneOTP, User , HomeSlider , Category , Product , ProductImage  , Testimonial , Advertisement , CompanyInfo , About , Menu , CustomPage , Clients
+from django.core.mail import send_mail
+from home.models import PhoneOTP, User , HomeSlider , Category , Product , ProductImage  , Testimonial , Advertisement , CompanyInfo , About , Menu , CustomPage , Clients , BulkOrderRequest, BulkOrderPrice
 from django.shortcuts import get_object_or_404
 import random
 from django.views.decorators.csrf import csrf_exempt
@@ -14,7 +15,7 @@ from rest_framework.permissions import AllowAny , IsAdminUser
 from django.utils import timezone
 from datetime import timedelta
 from .serializers import UserSerializer 
-from home.serializers import CategorySerializer , ProductSerializer , TestimonialSerializer , AdvertisementSerializer ,  CompanyInfoSerializer , AboutSerializer  , MenuSerializer , CustomPageSerializer , ClientsSerializer
+from home.serializers import CategorySerializer , ProductSerializer , TestimonialSerializer , AdvertisementSerializer ,  CompanyInfoSerializer , AboutSerializer  , MenuSerializer , CustomPageSerializer , ClientsSerializer , BulkOrderRequestSerializer
 from rest_framework_simplejwt.tokens import RefreshToken
 from django.contrib.auth import authenticate
 from rest_framework.permissions import IsAuthenticated
@@ -28,8 +29,10 @@ from rest_framework import viewsets , permissions
 from rest_framework.parsers import MultiPartParser, FormParser
 from home.serializers import HomeSliderSerializer
 from rest_framework.decorators import action
-
-
+from django.http import FileResponse, Http404
+import os
+from django.template.loader import render_to_string
+from django.utils.html import strip_tags
 
 logger = logging.getLogger(__name__)
 
@@ -485,6 +488,39 @@ class ProductViewSet(viewsets.ModelViewSet):
             return [AllowAny()]
         return [IsAdminUser()]
     
+    def get_serializer_context(self):
+        """
+        Extra context provided to the serializer class.
+        """
+        context = super().get_serializer_context()
+        # Ensure request is included in context for generating absolute URLs
+        context['request'] = self.request
+        return context
+    
+
+    def list(self, request, *args, **kwargs):
+        """
+        List products with additional debugging for brochure fields
+        """
+        print(f"Received request with params: {request.query_params}")
+        queryset = self.filter_queryset(self.get_queryset())
+        
+        if 'slug' in request.query_params:
+            slug = request.query_params.get('slug')
+            print(f"Filtering by slug: {slug}")
+            products = queryset.filter(slug=slug)
+            print(f"Found {products.count()} products")
+            for product in products:
+                print(f"Product: {product.name}, Brochure: {product.product_brochure}")
+        
+        page = self.paginate_queryset(queryset)
+        if page is not None:
+            serializer = self.get_serializer(page, many=True)
+            return self.get_paginated_response(serializer.data)
+
+        serializer = self.get_serializer(queryset, many=True)
+        return Response(serializer.data)
+    
     def get_queryset(self):
         queryset = Product.objects.all()
 
@@ -536,6 +572,93 @@ class ProductViewSet(viewsets.ModelViewSet):
             return Response(status=status.HTTP_200_OK)
         return Response(status=status.HTTP_400_BAD_REQUEST)
     
+    @action(detail=True, methods=['GET'])
+    def similar_products(self, request, slug=None):
+        """Get similar products based on the same categories"""
+        product = self.get_object()
+        
+        # Get categories of this product
+        categories = product.categories.all()
+        
+        if not categories:
+            return Response([])
+        
+        # Get products from the same categories, excluding this product
+        similar_products = Product.objects.filter(
+            categories__in=categories,
+            is_active=True
+        ).exclude(id=product.id).distinct()[:4]
+        
+        serializer = self.get_serializer(similar_products, many=True)
+        return Response(serializer.data)
+
+        
+    @action(detail=True, methods=['GET'])
+    def download_brochure(self, request, slug=None):
+        """Download product brochure"""
+        product = self.get_object()
+        
+        if not product.product_brochure:
+            return Response(
+                {'detail': 'No brochure available for this product'},
+                status=status.HTTP_404_NOT_FOUND
+            )
+        
+        try:
+            file_path = product.product_brochure.path
+            
+            if os.path.exists(file_path):
+                response = FileResponse(
+                    open(file_path, 'rb'),
+                    content_type='application/pdf'
+                )
+                
+                # Set the Content-Disposition header for download
+                filename = os.path.basename(file_path)
+                response['Content-Disposition'] = f'attachment; filename="{filename}"'
+                
+                return response
+            else:
+                raise Http404("Brochure file not found")
+        except Exception as e:
+            logger.error(f"Error downloading brochure: {str(e)}")
+            return Response(
+                {'detail': 'Error accessing brochure file'},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+    @action(detail=True, methods=['DELETE'])
+    def remove_brochure(self, request, slug=None):
+        """Remove product brochure"""
+        product = self.get_object()
+        
+        if not product.product_brochure:
+            return Response(
+                {'detail': 'No brochure exists for this product'},
+                status=status.HTTP_404_NOT_FOUND
+            )
+        
+        try:
+            # Get the file path
+            file_path = product.product_brochure.path
+            
+            # Remove file from storage if it exists
+            if os.path.exists(file_path):
+                os.remove(file_path)
+            
+            # Clear the field in the model
+            product.product_brochure = None
+            product.save()
+            
+            return Response(
+                {'detail': 'Brochure removed successfully'},
+                status=status.HTTP_200_OK
+            )
+        except Exception as e:
+            logger.error(f"Error removing brochure: {str(e)}")
+            return Response(
+                {'detail': 'Error removing brochure'},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
        
 
 class TestimonialViewSet(viewsets.ModelViewSet):
@@ -597,11 +720,18 @@ class AdvertisementViewSet(viewsets.ModelViewSet):
     def get_queryset(self):
         queryset = Advertisement.objects.all()
         if self.action == 'list':
+            # Get filter parameters
             position = self.request.query_params.get('position')
+            ad_type = self.request.query_params.get('type')
             is_active = self.request.query_params.get('is_active')
             
+            # Apply filters if parameters are provided
             if position:
                 queryset = queryset.filter(position=position)
+            
+            if ad_type:
+                queryset = queryset.filter(type=ad_type)
+                
             if is_active is not None:
                 queryset = queryset.filter(is_active=is_active.lower() == 'true')
                 
@@ -850,3 +980,342 @@ class CustomPageViewSet(viewsets.ModelViewSet):
             queryset = queryset.filter(show_in_footer=True)
             
         return queryset.order_by('order', 'title')
+    
+
+
+class BulkOrderRequestViewSet(viewsets.ModelViewSet):
+    queryset = BulkOrderRequest.objects.all()
+    serializer_class = BulkOrderRequestSerializer
+    lookup_field = 'id'
+    
+    def get_permissions(self):
+        if self.action in ['create', 'user_requests']:
+            return [AllowAny()]
+        return [IsAdminUser()]
+    
+    def create(self, request, *args, **kwargs):
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        bulk_order = serializer.save()
+        
+        # Calculate quotation immediately
+        bulk_order.calculate_quotation()
+        
+        # Send email notification to admin
+        self._send_admin_notification(bulk_order)
+        
+        # Send confirmation email to customer
+        self._send_customer_confirmation(bulk_order)
+        
+        return Response(
+            self.get_serializer(bulk_order).data,
+            status=status.HTTP_201_CREATED
+        )
+    
+    def _send_admin_notification(self, bulk_order):
+        try:
+            company_info = CompanyInfo.get_info()
+            admin_email = company_info.email
+            
+            subject = f"New Bulk Order Request: {bulk_order.name}"
+            message = f"""
+            A new bulk order request has been received.
+            
+            Customer: {bulk_order.name}
+            Email: {bulk_order.email}
+            Phone: {bulk_order.phone}
+            Company: {bulk_order.company_name or 'N/A'}
+            
+            Product: {bulk_order.product.name}
+            Quantity: {bulk_order.quantity_required}
+            
+            Additional Notes: {bulk_order.additional_notes or 'None'}
+            
+            Please review this request in the admin panel.
+            """
+            
+            send_mail(
+                subject,
+                message,
+                settings.DEFAULT_FROM_EMAIL,
+                [admin_email],
+                fail_silently=True,
+            )
+        except Exception as e:
+            logger.error(f"Error sending admin notification: {str(e)}")
+    
+    def _send_customer_confirmation(self, bulk_order):
+        try:
+            subject = f"Your Quote Request - {bulk_order.product.name}"
+            
+            if bulk_order.is_processed and bulk_order.status == 'quoted':
+                message = f"""
+                Dear {bulk_order.name},
+                
+                Thank you for requesting a quote for {bulk_order.product.name}.
+                
+                Your quote has been processed:
+                - Quantity: {bulk_order.quantity_required}
+                - Price per unit: ₹{bulk_order.price_per_unit}
+                - Total quote amount: ₹{bulk_order.total_price}
+                
+                Please review this quote. If you'd like to proceed with this order,
+                please contact our sales team or place your order through your account.
+                
+                Thank you for your interest in our products.
+                """
+            else:
+                message = f"""
+                Dear {bulk_order.name},
+                
+                Thank you for requesting a quote for {bulk_order.product.name}.
+                
+                We have received your request for:
+                - Quantity: {bulk_order.quantity_required} units
+                
+                Our team is reviewing your request and will get back to you shortly with pricing information.
+                
+                Thank you for your interest in our products.
+                """
+            
+            send_mail(
+                subject,
+                message,
+                settings.DEFAULT_FROM_EMAIL,
+                [bulk_order.email],
+                fail_silently=True,
+            )
+        except Exception as e:
+            logger.error(f"Error sending customer confirmation: {str(e)}")
+    
+    @action(detail=False, methods=['GET'])
+    def user_requests(self, request):
+        """Get all bulk order requests for the current user's email"""
+        email = request.query_params.get('email')
+        if not email:
+            return Response(
+                {'detail': 'Email parameter is required'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        queryset = BulkOrderRequest.objects.filter(email=email).order_by('-created_at')
+        serializer = self.get_serializer(queryset, many=True)
+        return Response(serializer.data)
+    
+    @action(detail=True, methods=['POST'])
+    def process_quotation(self, request, id=None):
+        """Admin action to process a quotation manually"""
+        bulk_order = self.get_object()
+        
+        # Get manual price if provided
+        price_per_unit = request.data.get('price_per_unit')
+        
+        if price_per_unit:
+            try:
+                price_per_unit = float(price_per_unit)
+                bulk_order.price_per_unit = price_per_unit
+                bulk_order.total_price = price_per_unit * bulk_order.quantity_required
+            except ValueError:
+                return Response(
+                    {'detail': 'Invalid price format'},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+        else:
+            # Use automated calculation
+            bulk_order.calculate_quotation()
+        
+        bulk_order.status = 'quoted'
+        bulk_order.is_processed = True
+        bulk_order.save()
+        
+        # Send email to customer with quotation
+        self._send_customer_confirmation(bulk_order)
+        
+        serializer = self.get_serializer(bulk_order)
+        return Response(serializer.data)
+    
+    @action(detail=True, methods=['PATCH'])
+    def update_status(self, request, id=None):
+        """Update the status of a bulk order request"""
+        bulk_order = self.get_object()
+        
+        # Get the new status from the request
+        new_status = request.data.get('status')
+        if not new_status:
+            return Response(
+                {'detail': 'Status is required'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        # Validate the status
+        valid_statuses = ['pending', 'quoted', 'approved', 'rejected']
+        if new_status not in valid_statuses:
+            return Response(
+                {'detail': f'Invalid status. Must be one of {", ".join(valid_statuses)}'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        # Update the status
+        bulk_order.status = new_status
+        bulk_order.save()
+        
+        # Send email notification to customer
+        self._send_status_update_email(bulk_order)
+        
+        serializer = self.get_serializer(bulk_order)
+        return Response(serializer.data)
+
+    @action(detail=True, methods=['POST'])
+    def send_email(self, request, id=None):
+        """Send an email to the customer about their quotation"""
+        bulk_order = self.get_object()
+        
+        # Send email based on the current status
+        if bulk_order.status == 'pending':
+            subject = f"Your Quotation Request - {bulk_order.product.name}"
+            message = f"""
+            Dear {bulk_order.name},
+            
+            Thank you for your quotation request for {bulk_order.product.name}.
+            
+            We are currently reviewing your request for {bulk_order.quantity_required} units and will get back to you shortly with pricing information.
+            
+            Best regards,
+            Your Company Name
+            """
+        elif bulk_order.status == 'quoted':
+            subject = f"Your Price Quote - {bulk_order.product.name}"
+            message = f"""
+            Dear {bulk_order.name},
+            
+            We are pleased to provide you with a quote for your request:
+            
+            Product: {bulk_order.product.name}
+            Quantity: {bulk_order.quantity_required} units
+            Price per unit: ₹{bulk_order.price_per_unit}
+            Total price: ₹{bulk_order.total_price}
+            
+            This quote is valid for 7 days. To proceed with this order, please reply to this email or contact our sales team.
+            
+            Best regards,
+            Your Company Name
+            """
+        elif bulk_order.status == 'approved':
+            subject = f"Your Quotation Has Been Approved - {bulk_order.product.name}"
+            message = f"""
+            Dear {bulk_order.name},
+            
+            We are pleased to inform you that your quotation has been approved:
+            
+            Product: {bulk_order.product.name}
+            Quantity: {bulk_order.quantity_required} units
+            Price per unit: ₹{bulk_order.price_per_unit}
+            Total price: ₹{bulk_order.total_price}
+            
+            Our team will contact you shortly to proceed with the order.
+            
+            Best regards,
+            Your Company Name
+            """
+        elif bulk_order.status == 'rejected':
+            subject = f"Update on Your Quotation Request - {bulk_order.product.name}"
+            message = f"""
+            Dear {bulk_order.name},
+            
+            Thank you for your interest in our products. 
+            
+            We regret to inform you that we are unable to provide a quotation for your request at this time. This may be due to availability, quantity constraints, or other factors.
+            
+            Please feel free to contact us to discuss alternative options or to submit a revised request.
+            
+            Best regards,
+            Your Company Name
+            """
+        else:
+            return Response(
+                {'detail': 'Invalid status for sending email'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        try:
+            # Get company info for from_email
+            company_info = CompanyInfo.get_info()
+            from_email = settings.DEFAULT_FROM_EMAIL or company_info.email
+            
+            # Send the email
+            send_mail(
+                subject,
+                message,
+                from_email,
+                [bulk_order.email],
+                fail_silently=False,
+            )
+            
+            return Response({'status': 'Email sent successfully'})
+        except Exception as e:
+            logger.error(f"Error sending email: {str(e)}")
+            return Response(
+                {'detail': f'Error sending email: {str(e)}'},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
+    def _send_status_update_email(self, bulk_order):
+        """Helper method to send status update emails"""
+        try:
+            # Get company info for from_email
+            company_info = CompanyInfo.get_info()
+            from_email = settings.DEFAULT_FROM_EMAIL or company_info.email
+            
+            if bulk_order.status == 'quoted':
+                subject = f"Price Quote Ready - {bulk_order.product.name}"
+                message = f"""
+                Dear {bulk_order.name},
+                
+                Your quotation is ready:
+                
+                Product: {bulk_order.product.name}
+                Quantity: {bulk_order.quantity_required} units
+                Price per unit: ₹{bulk_order.price_per_unit}
+                Total price: ₹{bulk_order.total_price}
+                
+                This quote is valid for 7 days. To proceed with this order, please contact our sales team.
+                
+                Best regards,
+                Your Company Name
+                """
+            elif bulk_order.status == 'approved':
+                subject = f"Your Quotation Has Been Approved - {bulk_order.product.name}"
+                message = f"""
+                Dear {bulk_order.name},
+                
+                We are pleased to inform you that your quotation has been approved. Our team will contact you shortly to proceed with the order.
+                
+                Best regards,
+                Your Company Name
+                """
+            elif bulk_order.status == 'rejected':
+                subject = f"Update on Your Quotation Request - {bulk_order.product.name}"
+                message = f"""
+                Dear {bulk_order.name},
+                
+                Thank you for your interest in our products. We regret to inform you that we are unable to provide a quotation for your request at this time.
+                
+                Please feel free to contact us to discuss alternative options.
+                
+                Best regards,
+                Your Company Name
+                """
+            else:
+                # Don't send emails for other statuses
+                return
+            
+            # Send the email
+            send_mail(
+                subject,
+                message,
+                from_email,
+                [bulk_order.email],
+                fail_silently=True,
+            )
+        except Exception as e:
+            logger.error(f"Error sending status update email: {str(e)}")

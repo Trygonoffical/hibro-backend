@@ -178,3 +178,13 @@ SIMPLE_JWT = {
     'ROTATE_REFRESH_TOKENS': True,  # Issues new refresh token on refresh
     'BLACKLIST_AFTER_ROTATION': True,  # Important for security
 }
+
+
+# Email settings
+EMAIL_BACKEND = 'django.core.mail.backends.smtp.EmailBackend'
+EMAIL_HOST = 'smtp.hostinger.com'  # Replace with your SMTP server
+EMAIL_PORT = 465
+EMAIL_USE_TLS = True
+EMAIL_HOST_USER = 'info@trygon.in'  # Replace with your email
+EMAIL_HOST_PASSWORD = 'Trygon@123!'  # Replace with your password
+DEFAULT_FROM_EMAIL = 'HiBro Products>'
