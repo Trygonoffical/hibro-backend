@@ -155,7 +155,7 @@ class Category(models.Model):
     is_active = models.BooleanField(default=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
-
+    show_in_home = models.BooleanField(default=False)
     class Meta:
         db_table = 'categories'
         verbose_name = 'Category'
