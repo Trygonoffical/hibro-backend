@@ -304,7 +304,7 @@ class AdvertisementSerializer(serializers.ModelSerializer):
     class Meta:
         model = Advertisement
         fields = [
-            'id', 'title', 'image', 'image_url', 'link', 'type'
+            'id', 'title', 'image', 'image_url', 'link', 'type',
             'position', 'is_active', 'created_at'
         ]
         read_only_fields = ['created_at']
