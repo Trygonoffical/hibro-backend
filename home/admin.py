@@ -3,7 +3,7 @@ from django.utils.html import format_html
 # Register your models here.
 from .models import (
     User, PhoneOTP, Product, Customer, Order, OrderItem,
-    Testimonial , Advertisement , About ,Menu ,CompanyInfo
+    Testimonial , Advertisement , About ,Menu ,CompanyInfo, CustomPage
 )
 
 # Register your models here.
@@ -14,6 +14,7 @@ admin.site.register(Customer)
 admin.site.register(Order)
 admin.site.register(OrderItem)
 admin.site.register(CompanyInfo)
+admin.site.register(CustomPage)
 
 from django.utils.html import format_html
 
