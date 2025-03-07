@@ -358,7 +358,7 @@ class Order(models.Model):
     final_amount = models.DecimalField(max_digits=10, decimal_places=2)
     shipping_address = models.TextField()
     billing_address = models.TextField()
-    total_bp = models.PositiveIntegerField(default=0)  # Total BP points for the order
+    
 
     class Meta:
         db_table = 'orders'
@@ -370,7 +370,6 @@ class OrderItem(models.Model):
     price = models.DecimalField(max_digits=10, decimal_places=2)
     discount_percentage = models.DecimalField(max_digits=5, decimal_places=2, default=0)
     final_price = models.DecimalField(max_digits=10, decimal_places=2)
-    bp_points = models.PositiveIntegerField(default=0)  # BP points for this item
 
     class Meta:
         db_table = 'order_items'

@@ -6,7 +6,7 @@ from rest_framework.views import APIView
 from rest_framework.response import Response
 from django.conf import settings
 from django.core.mail import send_mail
-from home.models import PhoneOTP, User , HomeSlider , Category , Product , ProductImage  , Testimonial , Advertisement , CompanyInfo , About , Menu , CustomPage , Clients , BulkOrderRequest, BulkOrderPrice
+from home.models import PhoneOTP, User , HomeSlider , Category , Product , ProductImage  , Testimonial , Advertisement , CompanyInfo , About , Menu , CustomPage , Clients , BulkOrderRequest, BulkOrderPrice , Address , Order , OrderItem
 from django.shortcuts import get_object_or_404
 import random
 from django.views.decorators.csrf import csrf_exempt
@@ -15,7 +15,7 @@ from rest_framework.permissions import AllowAny , IsAdminUser
 from django.utils import timezone
 from datetime import timedelta
 from .serializers import UserSerializer 
-from home.serializers import CategorySerializer , ProductSerializer , TestimonialSerializer , AdvertisementSerializer ,  CompanyInfoSerializer , AboutSerializer  , MenuSerializer , CustomPageSerializer , ClientsSerializer , BulkOrderRequestSerializer
+from home.serializers import CategorySerializer , ProductSerializer , TestimonialSerializer , AdvertisementSerializer ,  CompanyInfoSerializer , AboutSerializer  , MenuSerializer , CustomPageSerializer , ClientsSerializer , BulkOrderRequestSerializer , AddressSerializer , CustomerProfileSerializer , OrderSerializer
 from rest_framework_simplejwt.tokens import RefreshToken
 from django.contrib.auth import authenticate
 from rest_framework.permissions import IsAuthenticated
@@ -33,6 +33,13 @@ from django.http import FileResponse, Http404
 import os
 from django.template.loader import render_to_string
 from django.utils.html import strip_tags
+import time 
+import razorpay
+from django.db import transaction
+from decimal import Decimal
+from utils.invoice_generator import generate_invoice_pdf
+from rest_framework.decorators import api_view, permission_classes
+
 
 logger = logging.getLogger(__name__)
 
@@ -1319,3 +1326,604 @@ class BulkOrderRequestViewSet(viewsets.ModelViewSet):
             )
         except Exception as e:
             logger.error(f"Error sending status update email: {str(e)}")
+
+
+
+class AddressViewSet(viewsets.ModelViewSet):
+    serializer_class = AddressSerializer
+    authentication_classes = [JWTAuthentication]
+    permission_classes = [IsAuthenticated]
+
+    def get_queryset(self):
+        return Address.objects.filter(user=self.request.user)
+
+    def perform_create(self, serializer):
+        # If this is the user's first address, make it default
+        if not Address.objects.filter(user=self.request.user).exists():
+            serializer.save(user=self.request.user, is_active=True)
+        else:
+            serializer.save(user=self.request.user)
+
+    @action(detail=True, methods=['POST'])
+    def set_default(self, request, pk=None):
+        address = self.get_object()
+        # Set all other addresses to non-default
+        Address.objects.filter(user=request.user).update(is_active=False)
+        # Set this address as default
+        address.is_active = True
+        address.save()
+        return Response({'status': 'default address set'})
+
+    @action(detail=False, methods=['GET'])
+    def default(self, request):
+        address = Address.objects.filter(user=request.user, is_active=True).first()
+        if address:
+            serializer = self.get_serializer(address)
+            return Response(serializer.data)
+        return Response({'message': 'No default address found'}, 
+                       status=status.HTTP_404_NOT_FOUND)
+
+class CustomerProfileView(APIView):
+    authentication_classes = [JWTAuthentication]
+    permission_classes = [IsAuthenticated]
+    
+    def post(self, request):
+        """Update customer profile"""
+        if request.user.role != 'CUSTOMER':
+            return Response({
+                'status': 'error',
+                'message': 'Only customers can access this endpoint'
+            }, status=status.HTTP_403_FORBIDDEN)
+
+        serializer = CustomerProfileSerializer(
+            request.user, 
+            data=request.data, 
+            partial=True
+        )
+        
+        if serializer.is_valid():
+            try:
+                user = serializer.save()
+                return Response({
+                    'status': 'success',
+                    'message': 'Profile updated successfully',
+                    # 'user': CustomerProfileSerializer(user).data,
+                    'userinfo': serializer.data 
+                })
+            except Exception as e:
+                return Response({
+                    'status': 'error',
+                    'message': str(e)
+                }, status=status.HTTP_400_BAD_REQUEST)
+        
+        return Response({
+            'status': 'error',
+            'message': 'Invalid data provided',
+            'errors': serializer.errors
+        }, status=status.HTTP_400_BAD_REQUEST)
+    
+
+
+# --------------------------------------------- Payment Secton --------------------------
+
+
+class CreateOrderView(APIView):
+    authentication_classes = [JWTAuthentication]
+    permission_classes = [IsAuthenticated] 
+    def post(self, request):
+        try:
+            # Initialize Razorpay client
+            client = razorpay.Client(
+                auth=(settings.RAZORPAY_KEY_ID, settings.RAZORPAY_KEY_SECRET)
+            )
+
+            # Create Razorpay order
+            data = {
+                'amount': int(request.data.get('amount')) * 100,  # Amount in paise
+                'currency': 'INR',
+                'receipt': f'order_rcptid_{int(time.time())}',
+                'payment_capture': 1  # Auto-capture payment
+            }
+            
+            order = client.order.create(data=data)
+            print('order' , order)
+            print('data' , request.data)
+            return Response({
+                'order_id': order['id'],
+                'amount': order['amount'],
+                'currency': order['currency']
+            })
+        except Exception as e:
+            return Response({
+                'error': str(e)
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        
+
+class VerifyPaymentView(APIView):
+    authentication_classes = [JWTAuthentication]
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        try:
+            # Log the incoming request data
+            logger.info(f"Verify Payment Request Data: {request.data}")
+
+            # Get payment details
+            payment_id = request.data.get('razorpay_payment_id')
+            order_id = request.data.get('razorpay_order_id')
+            signature = request.data.get('razorpay_signature')
+            update_stock = request.data.get('update_stock', False)
+
+            # Additional logging
+            logger.info(f"Payment ID: {payment_id}")
+            logger.info(f"Order ID: {order_id}")
+
+            # Get the order
+            order = Order.objects.get(razorpay_order_id=order_id)
+
+            # Initialize Razorpay client
+            client = razorpay.Client(
+                auth=(settings.RAZORPAY_KEY_ID, settings.RAZORPAY_KEY_SECRET)
+            )
+
+            # Verify signature
+            params_dict = {
+                'razorpay_payment_id': payment_id,
+                'razorpay_order_id': order_id,
+                'razorpay_signature': signature
+            }
+            
+            try:
+                client.utility.verify_payment_signature(params_dict)
+                
+                # Use a transaction to ensure consistency
+                with transaction.atomic():
+                    # Update order status
+                    order.status = 'CONFIRMED'
+                    order.payment_id = payment_id
+                    order.save()
+
+                    # Update product stock if requested
+                    if update_stock:
+                        for item in order.items.all():
+                            product = item.product
+                            if product.stock >= item.quantity:
+                                product.stock -= item.quantity
+                                product.save()
+                                logger.info(f"Updated stock for product {product.id}, new stock: {product.stock}")
+                            else:
+                                logger.warning(f"Insufficient stock for product {product.id}: requested {item.quantity}, available {product.stock}")
+                                # We still proceed with the order even if stock is insufficient
+                                # This is to avoid issues with the customer who already paid
+                                product.stock = 0  # Set to zero instead of negative
+                                product.save()
+
+                return Response({
+                    'status': 'success',
+                    'message': 'Payment verified successfully',
+                    'order_id': order.id
+                })
+            except Exception as e:
+                order.status = 'FAILED'
+                order.save()
+                raise e
+
+        except Exception as e:
+            logger.error(f"Error in VerifyPaymentView: {str(e)}")
+            return Response({
+                'status': 'error',
+                'message': str(e)
+            }, status=status.HTTP_400_BAD_REQUEST)
+    
+        
+class OrderProcessView(APIView):
+    authentication_classes = [JWTAuthentication]
+    permission_classes = [IsAuthenticated]
+    
+    def generate_order_number(self):
+        return f"ORD-{int(time.time())}"
+    
+    
+    
+    def calculate_item_totals(self, product, quantity, discount_percentage=0):
+        """Calculate totals for a single item with discount"""
+        price = product.selling_price
+        base_amount = price * quantity
+        
+        
+            
+        # Calculate GST on discounted amount
+        gst_amount = (base_amount * product.gst_percentage) / 100
+        total_price = base_amount + gst_amount
+      
+        
+        return {
+            'base_price': price,
+            'gst_amount': gst_amount,
+            'total_price': total_price,
+        }
+    
+    def calculate_shipping(self, subtotal):
+        """Calculate shipping cost based on subtotal"""
+        return Decimal('0.00') if subtotal > 0 else Decimal('0.00')
+    
+    
+    def post(self, request):
+        try:
+            # Get cart items (only need product IDs and quantities)
+            cart_items = request.data.get('items', [])
+            if not cart_items:
+                return Response({
+                    'status': 'error',
+                    'message': 'Cart is empty'
+                }, status=status.HTTP_400_BAD_REQUEST)
+            
+            # Get default address
+            default_address = Address.objects.filter(
+                user=request.user, 
+                is_active=True
+            ).first()
+            
+            if not default_address:
+                return Response({
+                    'status': 'error',
+                    'message': 'No default address found'
+                }, status=status.HTTP_400_BAD_REQUEST)
+
+            # Get MLM discount percentage if applicable
+            discount_percentage = 0
+            
+            # Initialize totals
+            subtotal = Decimal('0.00')
+            total_discount = Decimal('0.00')
+            total_gst = Decimal('0.00')
+            order_items = []
+
+            # Calculate totals for each item
+            for item in cart_items:
+                try:
+                    product = Product.objects.get(id=item['id'])
+                    quantity = int(item['quantity'])
+
+                    # Validate quantity
+                    if quantity <= 0:
+                        raise ValueError(f"Invalid quantity for product {product.name}")
+                    if quantity > product.stock:
+                        raise ValueError(f"Not enough stock for {product.name}")
+
+                    # Calculate item totals with MLM discount if applicable
+                    item_totals = self.calculate_item_totals(
+                        product, 
+                        quantity, 
+                        discount_percentage
+                    )
+                    
+                    subtotal += item_totals['base_price'] * quantity
+                    total_discount += item_totals['discount_amount']
+                    total_gst += item_totals['gst_amount']
+                   
+
+                    order_items.append({
+                        'product': product,
+                        'quantity': quantity,
+                        'price': item_totals['base_price'],
+                        'discount_amount': item_totals['discount_amount'],
+                        'gst_amount': item_totals['gst_amount'],
+                        'total_price': item_totals['total_price'],
+                        
+                    })
+
+                except Product.DoesNotExist:
+                    return Response({
+                        'status': 'error',
+                        'message': f'Product with ID {item["id"]} not found'
+                    }, status=status.HTTP_400_BAD_REQUEST)
+
+            # Calculate shipping and final total
+            shipping_cost = self.calculate_shipping(subtotal - total_discount)
+            final_total = subtotal - total_discount + total_gst + shipping_cost
+
+            # Create order
+            order = Order.objects.create(
+                user=request.user,
+                order_number=self.generate_order_number(),
+                total_amount=subtotal,
+                discount_amount=total_discount,
+                final_amount=final_total,
+                shipping_address=f"{default_address.name}, {default_address.street_address}, {default_address.city}, {default_address.state}, {default_address.postal_code}",
+                billing_address=f"{default_address.name}, {default_address.street_address}, {default_address.city}, {default_address.state}, {default_address.postal_code}",
+                status='PENDING'
+            )
+
+            # Create order items
+            for item in order_items:
+                OrderItem.objects.create(
+                    order=order,
+                    product=item['product'],
+                    quantity=item['quantity'],
+                    price=item['price'],
+                    discount_percentage=discount_percentage,
+                    discount_amount=item['discount_amount'],
+                    gst_amount=item['gst_amount'],
+                    final_price=item['total_price'],
+                    bp_points=item['bp_points']
+                )
+
+
+            # Create Razorpay order
+            client = razorpay.Client(
+                auth=(settings.RAZORPAY_KEY_ID, settings.RAZORPAY_KEY_SECRET)
+            )
+
+            payment_data = {
+                'amount': int(final_total * 100),  # Convert to paise
+                'currency': 'INR',
+                'receipt': order.order_number,
+                'payment_capture': 1,
+                'notes': {
+                    'order_id': order.id,
+                    'shipping_address': order.shipping_address,
+                }
+            }
+            
+            razorpay_order = client.order.create(payment_data)
+            
+            # Update order with razorpay order id
+            order.razorpay_order_id = razorpay_order['id']
+            order.save()
+
+            return Response({
+                'status': 'success',
+                'order_id': order.id,
+                'razorpay_order_id': razorpay_order['id'],
+                'amount': razorpay_order['amount'],
+                'currency': razorpay_order['currency'],
+                'order_summary': {
+                    'subtotal': float(subtotal),
+                    'discount': {
+                        'percentage': float(discount_percentage),
+                        'amount': float(total_discount)
+                    },
+                    'gst': float(total_gst),
+                    'shipping': float(shipping_cost),
+                    'total': float(final_total),
+                }
+            })
+
+        except ValueError as e:
+            return Response({
+                'status': 'error',
+                'message': str(e)
+            }, status=status.HTTP_400_BAD_REQUEST)
+        except Exception as e:
+            logger.error(f"Order processing error: {str(e)}")
+            return Response({
+                'status': 'error',
+                'message': 'An unexpected error occurred'
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+class UpdateStockView(APIView):
+    """
+    API endpoint to update product stock after successful payment
+    """
+    authentication_classes = [JWTAuthentication]
+    permission_classes = [IsAuthenticated]
+    
+    def post(self, request):
+        try:
+            items = request.data.get('items', [])
+            
+            if not items:
+                return Response(
+                    {'error': 'No items provided'}, 
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+            
+            with transaction.atomic():
+                updated_items = []
+                out_of_stock_items = []
+                
+                for item in items:
+                    product_id = item.get('product_id')
+                    quantity = item.get('quantity', 0)
+                    
+                    try:
+                        product = Product.objects.select_for_update().get(id=product_id)
+                        
+                        # Check if sufficient stock is available
+                        if product.stock < quantity:
+                            out_of_stock_items.append({
+                                'product_id': product_id,
+                                'name': product.name,
+                                'available_stock': product.stock,
+                                'requested_quantity': quantity
+                            })
+                            continue
+                        
+                        # Update the stock
+                        product.stock -= quantity
+                        product.save()
+                        
+                        updated_items.append({
+                            'product_id': product_id,
+                            'name': product.name,
+                            'previous_stock': product.stock + quantity,
+                            'new_stock': product.stock
+                        })
+                        
+                    except Product.DoesNotExist:
+                        return Response(
+                            {'error': f'Product with ID {product_id} not found'}, 
+                            status=status.HTTP_404_NOT_FOUND
+                        )
+                
+                if out_of_stock_items:
+                    # If any items are out of stock, rollback transaction and return error
+                    transaction.set_rollback(True)
+                    return Response({
+                        'success': False,
+                        'message': 'Some items are out of stock',
+                        'out_of_stock_items': out_of_stock_items
+                    }, status=status.HTTP_400_BAD_REQUEST)
+                
+                return Response({
+                    'success': True,
+                    'message': 'Stock updated successfully',
+                    'updated_items': updated_items
+                })
+                
+        except Exception as e:
+            logger.error(f"Error updating stock: {str(e)}")
+            return Response(
+                {'error': 'An error occurred while updating stock'}, 
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+        
+class CheckStockAvailabilityView(APIView):
+    """
+    API endpoint to check if requested products are in stock
+    """
+    authentication_classes = [JWTAuthentication]
+    permission_classes = [IsAuthenticated]
+    
+    def post(self, request):
+        try:
+            items = request.data.get('items', [])
+            
+            if not items:
+                return Response(
+                    {'success': False, 'message': 'No items provided'}, 
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+            
+            out_of_stock_items = []
+            
+            for item in items:
+                product_id = item.get('product_id')
+                quantity = item.get('quantity', 0)
+                
+                try:
+                    product = Product.objects.get(id=product_id)
+                    
+                    # Check if sufficient stock is available
+                    if product.stock < quantity:
+                        out_of_stock_items.append({
+                            'product_id': product_id,
+                            'name': product.name,
+                            'available_stock': product.stock,
+                            'requested_quantity': quantity
+                        })
+                        
+                except Product.DoesNotExist:
+                    return Response(
+                        {'success': False, 'message': f'Product with ID {product_id} not found'}, 
+                        status=status.HTTP_404_NOT_FOUND
+                    )
+            
+            if out_of_stock_items:
+                return Response({
+                    'success': False,
+                    'message': 'Some items are out of stock',
+                    'out_of_stock_items': out_of_stock_items
+                })
+            
+            return Response({
+                'success': True,
+                'message': 'All items are in stock'
+            })
+            
+        except Exception as e:
+            logger.error(f"Error checking stock availability: {str(e)}")
+            return Response(
+                {'success': False, 'message': 'An error occurred while checking stock'}, 
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+        
+class OrderCancellationView(APIView):
+    """
+    API endpoint to cancel an incomplete order
+    """
+    authentication_classes = [JWTAuthentication]
+    permission_classes = [IsAuthenticated]
+    
+    def post(self, request, order_id):
+        try:
+            order = Order.objects.get(id=order_id, user=request.user)
+            
+            # Only allow cancellation for pending orders
+            if order.status != 'PENDING':
+                return Response(
+                    {'error': 'Only pending orders can be cancelled'}, 
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+            
+            # Update order status
+            order.status = 'CANCELLED'
+            order.save()
+            
+            return Response({
+                'success': True,
+                'message': 'Order cancelled successfully'
+            })
+            
+        except Order.DoesNotExist:
+            return Response(
+                {'error': 'Order not found or you do not have permission to cancel it'}, 
+                status=status.HTTP_404_NOT_FOUND
+            )
+        except Exception as e:
+            logger.error(f"Error cancelling order: {str(e)}")
+            return Response(
+                {'error': 'An error occurred while cancelling the order'}, 
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+        
+#----------------- Download Invoice ---------------------------------#
+
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def download_invoice(request, order_id):
+    try:
+        # For admin, allow access to any order
+        if request.user.role == 'ADMIN':
+            order = get_object_or_404(Order, id=order_id)
+        else:
+            # For regular users, only allow their own orders
+            order = get_object_or_404(Order, id=order_id, user=request.user)
+        
+        # Generate PDF
+        pdf_buffer = generate_invoice_pdf(order)
+        
+        # Create the response
+        response = FileResponse(
+            pdf_buffer,
+            as_attachment=True,
+            filename=f'invoice-{order.order_number}.pdf',
+            content_type='application/pdf'
+        )
+        
+        return response
+        
+    except Exception as e:
+        logger.error(f"Invoice download error for order {order_id}: {str(e)}")
+        return Response({
+            'status': 'error',
+            'message': str(e)
+        }, status=status.HTTP_400_BAD_REQUEST)
+    
+class OrderViewSet(viewsets.ReadOnlyModelViewSet):
+    serializer_class = OrderSerializer
+    permission_classes = [IsAuthenticated]
+
+    def get_queryset(self):
+        return Order.objects.filter(
+            user=self.request.user
+        ).order_by('-order_date').select_related(
+            'user'
+        ).prefetch_related(
+            'items',
+            'items__product'
+        )
+    

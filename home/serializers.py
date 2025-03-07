@@ -1,7 +1,7 @@
 
 from rest_framework import serializers
 from django.contrib.auth import get_user_model
-from .models import Testimonial , HomeSlider , Category , ProductImage , ProductFeature , Product  , Advertisement ,  CompanyInfo , About , Menu , CustomPage , Clients , BulkOrderRequest, BulkOrderPrice
+from .models import Testimonial , HomeSlider , Category , ProductImage , ProductFeature , Product  , Advertisement ,  CompanyInfo , About , Menu , CustomPage , Clients , BulkOrderRequest, BulkOrderPrice , Address , OrderItem , Order
 from appAuth.serializers import UserSerializer
 from django.db import IntegrityError
 from django.db.models import Sum, Avg, Count, Min, Max
@@ -480,3 +480,82 @@ class BulkOrderRequestSerializer(serializers.ModelSerializer):
             'status', 'status_display', 'is_processed', 'created_at'
         ]
         read_only_fields = ['price_per_unit', 'total_price', 'status', 'is_processed', 'created_at']
+
+
+class AddressSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Address
+        fields = ['id', 'name', 'street_address', 'city', 'state', 
+                 'postal_code', 'is_active', 'created_at', 'updated_at']
+        read_only_fields = ['created_at', 'updated_at']
+
+    def validate(self, data):
+        # If this is the first address, make it default
+        user = self.context['request'].user
+        if not Address.objects.filter(user=user).exists():
+            data['is_active'] = True
+        return data
+    
+
+class CustomerProfileSerializer(serializers.ModelSerializer):
+    # first_name = serializers.CharField(source='first_name', required=False, allow_blank=True)
+    # last_name = serializers.CharField(source='last_name', required=False, allow_blank=True)
+
+    
+    class Meta:
+        model = User
+        fields = ['id', 'first_name', 'last_name', 'email', 'phone_number', 'role']
+        read_only_fields = ['id', 'phone_number']
+
+    def validate_email(self, value):
+        if not value:
+            return value
+            
+        # Check if email exists for other users
+        if User.objects.exclude(id=self.instance.id).filter(email=value).exists():
+            raise serializers.ValidationError("This email is already in use.")
+        return value
+
+    def update(self, instance, validated_data):
+        # Update fields while preserving phone number
+        instance.first_name = validated_data.get('first_name', instance.first_name)
+        instance.last_name = validated_data.get('last_name', instance.last_name)
+        instance.email = validated_data.get('email', instance.email)
+        
+        instance.save()
+        return instance
+
+class OrderItemSerializer(serializers.ModelSerializer):
+    product = ProductSerializer()
+
+    class Meta:
+        model = OrderItem
+        fields = [
+            'id', 'product', 'quantity', 'price', 
+            'discount_percentage', 'discount_amount',
+            'gst_amount', 'final_price', 'bp_points'
+        ]
+class OrderSerializer(serializers.ModelSerializer):
+    items = OrderItemSerializer(many=True, read_only=True)
+    user = serializers.SerializerMethodField()
+    # Or use SerializerMethodField
+    final_amount_display = serializers.SerializerMethodField()
+
+    def get_final_amount_display(self, obj):
+        return float(obj.final_amount)
+    class Meta:
+        model = Order
+        fields = [
+            'id', 'order_number', 'order_date', 'status',
+            'total_amount', 'discount_amount', 'final_amount',
+            'final_amount_display', 'shipping_address', 'billing_address', 'total_bp',
+            'items' ,'user'
+        ]
+    def get_user(self, obj):
+        # Return a dictionary with user details
+        return {
+            'first_name': obj.user.first_name,
+            'last_name': obj.user.last_name,
+            'email': obj.user.email,
+            'phone_number': obj.user.phone_number
+        }
